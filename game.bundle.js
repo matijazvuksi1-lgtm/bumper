@@ -344,6 +344,36 @@ const seasonMeta = $("seasonMeta");
   const canvas = $("c");
   const ctx = canvas.getContext("2d");
 
+  // ---------- mobile/responsive canvas (keeps 1400x900 logical coords) ----------
+  function __fitCanvasToScreen() {
+    const logicalW = 1400;
+    const logicalH = 900;
+
+    const w = Math.max(320, Math.min(window.innerWidth, logicalW));
+    const h = Math.round(w * (logicalH / logicalW));
+
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+
+    const sx = (w / logicalW) * dpr;
+    const sy = (h / logicalH) * dpr;
+    ctx.setTransform(sx, 0, 0, sy, 0, 0);
+  }
+
+  window.addEventListener("resize", __fitCanvasToScreen, { passive: true });
+  __fitCanvasToScreen();
+
+  // Prevent scroll/zoom gestures on the canvas
+  canvas.style.touchAction = "none";
+  canvas.style.webkitTapHighlightColor = "transparent";
+  canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+
   // Mobile UX
   canvas.style.touchAction = "none";
   canvas.style.webkitTapHighlightColor = "transparent";
