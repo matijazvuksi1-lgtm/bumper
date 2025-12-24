@@ -89,8 +89,8 @@ window.GAME_CONFIG = {
     shrinkEveryTicks: 300,   // shrinks more often
     shrinkStep: 12,         // bigger shrink each time
     endRadius: 40,          // tighter final fights
-    shiftMax: 180,          // more zone movement
-    moveDurationTicks: 18ß   // faster zone movement
+    shiftMax: 100,          // more zone movement
+    moveDurationTicks: 400   // faster zone movement
   },
 
   // ============================
