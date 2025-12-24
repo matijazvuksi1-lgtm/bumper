@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bumper Royale</title>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b0b0b; font-family: Arial, sans-serif; color:#ddd; }
+    #c { position:fixed; inset:0; width:100vw; height:100vh; display:block; background:#0b0b0b; }
+
+    /* HUD top bar */
+    #hud { position:fixed; top:12px; left:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+      background:rgba(0,0,0,0.40); border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:10px 12px;
+      user-select:none; backdrop-filter: blur(6px); max-width: calc(100vw - 24px); z-index: 10; }
+    .pill { padding:6px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.10); background:rgba(255,255,255,0.05); font-size:12px; white-space:nowrap; }
+    button { padding:8px 10px; border-radius:12px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.06); color:#ddd; cursor:pointer }
+    button:hover { background: rgba(255,255,255,0.10); }
+    button:disabled { opacity:0.45; cursor:not-allowed; }
+
+    /* Panels */
+    .panel { position: fixed; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 14px; backdrop-filter: blur(6px); z-index: 10; overflow:hidden; display:flex; flex-direction:column; }
+    .panelHeader { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.10); }
+    .panelTitle { font-weight:800; font-size: 13px; }
+    .panelBody { padding: 10px 12px; overflow:auto; }
+    .row { display:flex; justify-content:space-between; gap:10px; font-size: 12px; padding:4px 0; }
+    .muted { opacity: 0.82; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    /* Positions */
+    #seasonPanel { left: 12px; top: 70px; width: 360px; max-height: 220px; }
+    #leaderboardPanel { left: 12px; top: 300px; width: 360px; max-height: calc(100vh - 312px); }
+    #top5Panel { right: 12px; top: 70px; width: 320px; max-height: 260px; }
+    #botsPanel { right: 12px; top: 345px; width: 320px; max-height: calc(100vh - 545px); }
+    #historyPanel { left: 384px; top: 70px; width: 330px; max-height: 340px; }
+
+    /* Killfeed */
+    #killfeed { position: fixed; right: 12px; top: 12px; width: min(360px, calc(100vw - 24px));
+      background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.10); border-radius: 14px;
+      padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+    #killfeed .title { font-weight:800; font-size: 13px; margin-bottom: 6px; }
+    #killfeedList { display:flex; flex-direction:column; gap:6px; }
+    .feedItem { font-size: 12px; opacity: 0.92; }
+    .feedItem b { font-weight: 900; }
+
+    /* Mini-map */
+    #minimap { position: fixed; right: 12px; bottom: 12px; width: 180px; height: 180px;
+      background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.10); border-radius: 14px;
+      backdrop-filter: blur(6px); z-index: 10; padding: 10px; box-sizing: border-box; }
+    #minimap canvas { width: 100%; height: 100%; display:block; }
+
+    /* Overlays */
+    .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.62); z-index:50; padding:16px; }
+    .hidden { display:none !important; }
+    .modal { width: min(860px, 96vw); background: rgba(10,10,12,0.92); border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 14px; padding: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); backdrop-filter: blur(8px); }
+    .modal .h { font-weight: 900; font-size: 14px; }
+    .winnerGrid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; }
+    .card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); border-radius: 14px; padding: 10px; }
+    .big { font-size: 20px; font-weight: 900; }
+  
+    .fabAllBots{
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 6000;
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.92);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+    }
+    .fabAllBots:hover{ background: rgba(255,255,255,0.12); }
+
+    /* Ensure Top 5 Hub panel hidden if still created by CSS */
+    #top5Hub, .top5Hub, [data-panel="top5hub"] { display:none !important; }
+
+/* ---- Bot Cards Overlay ---- */
+.overlay.hidden { display:none; }
+.overlay { position: fixed; inset: 0; z-index: 5000; }
+.overlayBackdrop { position:absolute; inset:0; background: rgba(0,0,0,0.62); backdrop-filter: blur(6px); }
+.overlayPanel {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(980px, calc(100vw - 24px));
+  height: min(720px, calc(100vh - 24px));
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  display:flex; flex-direction: column;
+  overflow: hidden;
+}
+.overlayHeader {
+  display:flex; align-items:center; justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+  gap: 10px;
+}
+.overlayTitle { font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.9; }
+.overlayActions { display:flex; align-items:center; gap: 10px; }
+.overlaySelect {
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 8px 10px;
+  outline: none;
+}
+.overlayBtn {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.overlayBtn:hover { background: rgba(255,255,255,0.12); }
+.overlayBody { padding: 14px; overflow:auto; }
+.botCardsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 900px) { .botCardsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .botCardsGrid { grid-template-columns: 1fr; } }
+
+.botCard {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 12px;
+  display:flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 140px;
+}
+.botCardTop { display:flex; align-items:flex-start; justify-content: space-between; gap: 10px; }
+.botCardId { font-size: 20px; font-weight: 800; letter-spacing: 0.02em; }
+.botBadge {
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  white-space: nowrap;
+  opacity: 0.95;
+}
+.botMeta { display:flex; gap: 8px; flex-wrap: wrap; }
+.botStatGrid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.botStat {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.botStatLabel { opacity: 0.75; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
+.botStatVal { font-weight: 800; }
+.rarityCommon { box-shadow: 0 0 0 1px rgba(170,170,170,0.40) inset; }
+.rarityRare { box-shadow: 0 0 0 1px rgba(80,160,255,0.55) inset; }
+.rarityEpic { box-shadow: 0 0 0 1px rgba(185,110,255,0.55) inset; }
+.rarityLegendary { box-shadow: 0 0 0 1px rgba(255,214,10,0.60) inset; }
+
+
+    /* ---- Rarity card colors (premium, subtle) ---- */
+    .botCard.rarityCommon{
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.03));
+      border-color: rgba(255,255,255,0.12);
+    }
+    .botCard.rarityRare{
+      background: linear-gradient(180deg, rgba(80,160,255,0.12), rgba(255,255,255,0.03));
+      border-color: rgba(80,160,255,0.38);
+    }
+    .botCard.rarityEpic{
+      background: linear-gradient(180deg, rgba(185,110,255,0.14), rgba(255,255,255,0.03));
+      border-color: rgba(185,110,255,0.40);
+    }
+    .botCard.rarityLegendary{
+      background: linear-gradient(180deg, rgba(255,214,10,0.14), rgba(255,255,255,0.03));
+      border-color: rgba(255,214,10,0.45);
+    }
+
+    /* ---- Rarity badge colors + icon ---- */
+    .botBadge.rarityBadgeCommon{
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.16);
+      color: rgba(255,255,255,0.90);
+    }
+    .botBadge.rarityBadgeRare{
+      background: rgba(80,160,255,0.16);
+      border-color: rgba(80,160,255,0.45);
+      color: rgba(210,235,255,0.96);
+    }
+    .botBadge.rarityBadgeEpic{
+      background: rgba(185,110,255,0.18);
+      border-color: rgba(185,110,255,0.48);
+      color: rgba(240,225,255,0.96);
+    }
+    .botBadge.rarityBadgeLegendary{
+      background: rgba(255,214,10,0.18);
+      border-color: rgba(255,214,10,0.55);
+      color: rgba(255,245,210,0.98);
+    }
+    .rarityIcon{
+      display:inline-block;
+      margin-right: 6px;
+      font-weight: 900;
+      opacity: 0.95;
+    }
+
+</style>
+
+  <!-- config FIRST -->
+  <script src="game.config.js"></script>
+</head>
+<body>
+<button id="openBotCards" class="fabAllBots" title="All Bots">ALL BOTS</button>
+
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <div class="pill" id="pMode">Mode: …</div>
+    <div class="pill" id="pAlive">Alive: …</div>
+    <div class="pill" id="pZone">Zone: …</div>
+    <div class="pill" id="pPhase">Phase: …</div>
+    <div class="pill" id="pNext">Next game: …</div>
+    <div class="pill" id="pChampion">Champion: …</div>
+
+    <button id="btnPause">Pause</button>
+    <button id="btnOpenReplay" disabled>Open Replay (new tab)</button>
+    <button id="btnShare" disabled>Copy Result</button>
+  </div>
+
+  <div class="panel" id="leaderboardPanel">
+    <div class="panelHeader">
+      <div class="panelTitle">Leaderboard (Top 10)</div>
+      <div class="muted mono" id="lbMeta">—</div>
+    </div>
+    <div class="panelBody" id="leaderboardBody"></div>
+  </div>
+
+  <div class="panel" id="historyPanel">
+    <div class="panelHeader">
+      <div class="panelTitle">Daily History (last 7)</div>
+      <div class="muted mono">click replay</div>
+    </div>
+    <div class="panelBody" id="historyBody"></div>
+  </div>
+
+  <div id="killfeed">
+    <div class="title">Killfeed</div>
+    <div id="killfeedList"></div>
+  </div>
+
+  <div class="panel" id="top5Panel">
+    <div class="panelHeader">
+      
+      <div class="muted mono" id="top5Meta">—</div>
+    </div>
+    <div class="panelBody" id="top5Body"></div>
+  </div>
+
+  
+<div class="panel" id="seasonPanel">
+  <div class="panelHeader">
+    <div class="panelTitle">Season Leaderboard</div>
+    <div class="muted mono" id="seasonMeta">—</div>
+  </div>
+  <div class="panelBody" id="seasonBody"></div>
+</div>
+
+<div class="panel" id="botsPanel">
+    <div class="panelHeader">
+      <div class="panelTitle">All Bots (Personality + Stats)</div>
+      <div class="muted mono" id="botsMeta">—</div>
+    </div>
+    <div class="panelBody" id="botsBody"></div>
+  </div>
+
+  <div id="minimap">
+    <canvas id="mini"></canvas>
+  </div>
+
+
+<!-- Bot ID Card overlay -->
+<div id="botOverlay" class="overlay hidden">
+  <div class="modal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div class="h">Bot Card</div>
+      <button id="btnBotClose">Close</button>
+    </div>
+
+    <div class="winnerGrid">
+      <div class="card">
+        <div class="muted">Bot</div>
+        <div class="big" id="botTitle">—</div>
+        <div class="muted" id="botRarity">—</div>
+        <div class="muted" id="botPersonality">—</div>
+        <div class="muted mono" id="botStatus">—</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Stats (fixed)</div>
+        <div class="row"><span>HP max</span><span class="mono" id="botHpMax">—</span></div>
+        <div class="row"><span>Speed</span><span class="mono" id="botSpeed">—</span></div>
+        <div class="row"><span>Damage</span><span class="mono" id="botDmg">—</span></div>
+        <div class="row"><span>Defense</span><span class="mono" id="botDef">—</span></div>
+        <div class="row"><span>Mass</span><span class="mono" id="botMass">—</span></div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Lifetime</div>
+        <div class="row"><span>Games</span><span class="mono" id="botLifeGames">0</span></div>
+        <div class="row"><span>Wins</span><span class="mono" id="botLifeWins">0</span></div>
+        <div class="row"><span>Winrate</span><span class="mono" id="botLifeWinrate">0%</span></div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Season</div>
+        <div class="row"><span>Season ID</span><span class="mono" id="botSeasonId">—</span></div>
+        <div class="row"><span>Games</span><span class="mono" id="botSeasonGames">0</span></div>
+        <div class="row"><span>Wins</span><span class="mono" id="botSeasonWins">0</span></div>
+        <div class="row"><span>Winrate</span><span class="mono" id="botSeasonWinrate">0%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <!-- Winner Card overlay -->
+  <div id="winnerOverlay" class="overlay hidden">
+    <div class="modal">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div class="h">Match Finished</div>
+        <button id="btnWinnerClose">Close</button>
+      </div>
+
+      <div class="winnerGrid">
+        <div class="card">
+          <div class="muted">Champion</div>
+          <div class="big" id="winName">—</div>
+          <div class="muted mono" id="winKey">—</div>
+          <div class="muted" id="winRarity">—</div>
+        </div>
+        <div class="card">
+          <div class="muted">Stats</div>
+          <div class="row"><span>Kills</span><span class="mono" id="winKills">0</span></div>
+          <div class="row"><span>Damage dealt</span><span class="mono" id="winDmg">0</span></div>
+          <div class="row"><span>Survival time</span><span class="mono" id="winTime">0s</span></div>
+        </div>
+        <div class="card" style="grid-column:1 / -1;">
+          <div class="muted">What next?</div>
+          <div class="row"><span>Next daily match</span><span class="mono" id="winNext">—</span></div>
+          <div class="row"><span>Replay</span><span class="mono">Use “Open Replay (new tab)”</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="game.bundle.js"></script>
+
+  <!-- Bot Cards Overlay -->
+  <div id="botCardsOverlay" class="overlay hidden" aria-hidden="true">
+    <div class="overlayBackdrop" id="botCardsCloseBackdrop"></div>
+    <div class="overlayPanel" role="dialog" aria-modal="true" aria-label="All Bot Stats">
+      <div class="overlayHeader">
+        <div class="overlayTitle">All Bots</div>
+        <div class="overlayActions">
+          <select id="botCardsSort" class="overlaySelect">
+            <option value="id">Sort: ID</option>
+            <option value="rarity">Sort: Rarity</option>
+            <option value="dmg">Sort: DMG</option>
+            <option value="speed">Sort: SPD</option>
+            <option value="def">Sort: DEF</option>
+            <option value="hp">Sort: HP</option>
+          </select>
+          <button id="botCardsClose" class="overlayBtn">Close</button>
+        </div>
+      </div>
+      <div class="overlayBody">
+        <div id="botCardsGrid" class="botCardsGrid"></div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
