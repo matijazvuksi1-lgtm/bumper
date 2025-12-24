@@ -1,4 +1,4 @@
-// server.cjs  (CommonJS - works without package.json)
+// server.js — Render compatible static server (FIXED for ?replay=...)
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -14,15 +14,18 @@ const MIME = {
 };
 
 http.createServer((req, res) => {
-  let file = req.url === "/" ? "/index.html" : req.url;
-  file = file.split("?")[0];
+  // ✅ strip query first
+  let file = (req.url || "/").split("?")[0];
+
+  // ✅ map "/" to index.html (works for "/?replay=...")
+  if (file === "/") file = "/index.html";
 
   const filePath = path.join(ROOT, file);
   const ext = path.extname(filePath);
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      res.writeHead(404);
+      res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not found");
       return;
     }
@@ -30,5 +33,5 @@ http.createServer((req, res) => {
     res.end(data);
   });
 }).listen(PORT, () => {
-  console.log(`✅ Game running: http://localhost:${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
