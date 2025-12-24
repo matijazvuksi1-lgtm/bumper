@@ -392,5 +392,13 @@
     </div>
   </div>
 
+
+<!-- Replay controls -->
+<div id="replayControls" style="position:fixed;right:14px;top:56px;z-index:50;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:12px;backdrop-filter: blur(6px);font-family:Arial;color:#fff;">
+  <div style="font-size:12px;opacity:.9;margin-bottom:6px;">Replay Speed: <b id="replaySpeedLabel">1.00x</b></div>
+  <input id="replaySpeed" type="range" min="0.25" max="4" step="0.25" value="1" style="width:180px;">
+  <div style="font-size:11px;opacity:.75;margin-top:6px;">Tip: Space = pause/resume • ←/→ = skip</div>
+</div>
+
 </body>
 </html>

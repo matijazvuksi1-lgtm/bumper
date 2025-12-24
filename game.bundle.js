@@ -133,22 +133,18 @@
 
   // ---------- daily key ----------
   function getDailyKey(date = new Date()) {
-  const p = getTzParts(date, GAME.timezone);
+    const p = getTzParts(date, GAME.timezone);
+    const resetHM = GAME.resetHour * 60 + GAME.resetMinute;
+    const nowHM = p.hour * 60 + p.minute;
 
-  // 12h slots: 06:00–17:59 => A, 18:00–05:59 => B
-  const slot = (p.hour >= 6 && p.hour < 18) ? "A" : "B";
-
-  // if before 06:00, count as previous day B
-  let y = p.year, m = p.month, d = p.day;
-  if (p.hour < 6) {
-    const prev = new Date(date.getTime() - 24 * 60 * 60 * 1000);
-    const q = getTzParts(prev, GAME.timezone);
-    y = q.year; m = q.month; d = q.day;
+    let y = p.year, m = p.month, d = p.day;
+    if (nowHM < resetHM) {
+      const dt = new Date(date.getTime() - 24 * 60 * 60 * 1000);
+      const q = getTzParts(dt, GAME.timezone);
+      y = q.year; m = q.month; d = q.day;
+    }
+    return `${y}${pad2(m)}${pad2(d)}`;
   }
-
-  return `${y}${pad2(m)}${pad2(d)}-${slot}`;
-}
-
 
   function msUntilNextReset() {
     const now = new Date();
@@ -275,17 +271,8 @@ function bumpMatchStats(state) {
 }
 
 
-  // No browser storage: keep tiny state in-memory only (refresh clears it).
-  const __MEM_STORE__ = new Map();
-  function saveJSON(k, obj) { try { __MEM_STORE__.set(k, JSON.stringify(obj)); } catch { } }
-  function loadJSON(k, fallback) {
-    try {
-      const s = __MEM_STORE__.get(k);
-      return s ? safeJsonParse(s, fallback) : fallback;
-    } catch {
-      return fallback;
-    }
-  }
+  function saveJSON(k, obj) { try { localStorage.setItem(k, JSON.stringify(obj)); } catch { } }
+  function loadJSON(k, fallback) { try { const s = localStorage.getItem(k); return s ? safeJsonParse(s, fallback) : fallback; } catch { return fallback; } }
 
   function addToHistoryKeyList(dailyKey) {
     const arr = loadJSON(HISTORY_KEY, []);
@@ -382,8 +369,8 @@ const seasonMeta = $("seasonMeta");
 
   // ---------- URL mode: replay window ----------
   const params = new URLSearchParams(location.search);
-  let replayDailyKey = params.get("replay"); // e.g. ?replay=20251224-A
-  const MODE = "REPLAY"; // viewer-only
+  const replayDailyKey = params.get("replay"); // e.g. ?replay=20251222
+  const MODE = replayDailyKey ? "REPLAY" : "LIVE";
 
   // ---------- effects (combat readability) ----------
   const dmgNumbers = []; // {x,y,text,ttl,vy}
@@ -762,8 +749,7 @@ const roster = getOrCreateRoster();
 
   // ---------- replay window mode ----------
   function loadReplayForKey(key) {
-    // Viewer-only: replays come from /replays/<key>.json (server), not LocalStorage.
-    return null;
+    return loadJSON(REPLAY_KEY(key), null);
   }
 
   // ---------- physics ----------
@@ -1305,61 +1291,39 @@ function renderBots(state) {
   }
 
   function renderHistory() {
-  historyBody.innerHTML = "";
-  const items = Array.isArray(window.__REPLAY_INDEX__) ? window.__REPLAY_INDEX__ : [];
-  if (!items.length) {
-    const d = document.createElement("div");
-    d.className = "muted";
-    d.textContent = "No previous battles yet.";
-    historyBody.appendChild(d);
-    return;
-  }
+    historyBody.innerHTML = "";
+    const keys = getHistoryKeyList();
+    if (!keys.length) {
+      const d = document.createElement("div");
+      d.className = "muted";
+      d.textContent = "No history yet. Finish a match first.";
+      historyBody.appendChild(d);
+      return;
+    }
 
-  for (const it of items) {
-    const key = (typeof it === "string") ? it : (it && (it.id || it.key)) || "";
-    if (!key) continue;
-    const winner = (typeof it === "object" && it) ? (it.winner || it.champion || "—") : "—";
-    const when = (typeof it === "object" && it) ? (it.createdAt || it.time || "") : "";
+    for (const k of keys) {
+      const champ = loadJSON(CHAMP_KEY(k), null);
+      const rep = loadReplayForKey(k);
+      const winner = champ?.winner || rep?.summary?.winner || "—";
 
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const left = document.createElement("div");
-    left.className = "mono";
-    left.textContent = key;
-
-    const mid = document.createElement("div");
-    mid.className = "muted";
-    mid.textContent = winner ? `Winner: ${winner}` : "Winner: —";
-
-    const btn = document.createElement("button");
-    btn.textContent = "Replay";
-    btn.style.padding = "6px 10px";
-    btn.style.borderRadius = "10px";
-    btn.onclick = () => {
-      const url = new URL(location.href);
-      url.searchParams.set("replay", key);
-      window.open(url.toString(), "_blank");
-    };
-
-    row.appendChild(left);
-    row.appendChild(mid);
-    row.appendChild(btn);
-
-    if (when) {
-      const small = document.createElement("div");
-      small.className = "muted mono";
-      small.style.fontSize = "11px";
-      small.style.marginTop = "2px";
-      small.textContent = when;
-      historyBody.appendChild(row);
-      historyBody.appendChild(small);
-    } else {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<span class="mono">${k}</span>
+        <span style="flex:1;">🏆 <b>${winner}</b></span>
+        <button data-replay="${k}">Replay</button>`;
       historyBody.appendChild(row);
     }
-  }
-}
 
+    // attach click
+    const buttons = historyBody.querySelectorAll("button[data-replay]");
+    buttons.forEach(btn => {
+      btn.addEventListener("click", () => {
+        const k = btn.getAttribute("data-replay");
+        // open replay in new window/tab
+        window.open(`index.html?replay=${encodeURIComponent(k)}`, "_blank");
+      });
+    });
+  }
 
   // ---------- winner card ----------
   function openWinnerCard(state, winnerStats) {
@@ -1510,23 +1474,37 @@ function installBotCardsOverlay() {
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeBotCardsOverlay();
   });
+
+    // replay controls (speed slider) if present in HTML
+    const spEl = document.getElementById("replaySpeed");
+    const spLbl = document.getElementById("replaySpeedLabel");
+    if (spEl && !spEl.__bound) {
+      spEl.__bound = true;
+      spEl.addEventListener("input", () => {
+        replaySpeed = Math.max(0.25, Math.min(4, parseFloat(spEl.value) || 1));
+        if (spLbl) spLbl.textContent = `${replaySpeed.toFixed(2)}x`;
+      });
+      replaySpeed = Math.max(0.25, Math.min(4, parseFloat(spEl.value) || 1));
+      if (spLbl) spLbl.textContent = `${replaySpeed.toFixed(2)}x`;
+    }
 }
 
 
   function initLive() {
-    // LIVE disabled in viewer-only build.
-    state = null;
+    state = newDailyMatch();
+    renderHistory();
   }
 
   // replay window state
   let replayCache = null;
+  let replaySpeed = 1.0; // 0.25x .. 4x
+
   let replayIdx = 0;
   let replayPlaying = true;
   let replayLastStepAt = 0;
 
   function initReplayMode(key) {
-    replayCache = window.__REPLAY_LOADED__ || null; // loaded from server
-
+    replayCache = loadReplayForKey(key);
 
     elMode.textContent = `Mode: REPLAY (${key})`;
     btnPause.disabled = true;
@@ -1537,7 +1515,7 @@ function installBotCardsOverlay() {
     pushFeed(`Replay opened for <b>${key}</b>`);
 
     if (!replayCache || !replayCache.frames || !replayCache.frames.length) {
-      pushFeed(`<b>No replay found</b> for ${key}. Server has no replay file.`);
+      pushFeed(`<b>No replay found</b> for ${key}. Play that day first.`);
       // create a fallback empty state so something renders
       const rng = mulberry32(hash32("empty"));
       const zone = newZone(rng);
@@ -1775,46 +1753,19 @@ function installBotCardsOverlay() {
   }
 
   // ---------- boot ----------
-  // Viewer-only boot: fetch server replay index + open selected replay (or latest)
-  async function bootViewer() {
-    // fetch list
-    try {
-      const r = await fetch("/replays/index.json", { cache: "no-store" });
-      window.__REPLAY_INDEX__ = r.ok ? await r.json() : [];
-    } catch {
-      window.__REPLAY_INDEX__ = [];
-    }
-
-    // render history list
+  if (MODE === "LIVE") {
+    initLive();
+    btnShare.disabled = true;
+    btnOpenReplay.disabled = (loadReplayForKey(getDailyKey(new Date())) == null);
     renderHistory();
-
-    // pick replay key
-    const items = Array.isArray(window.__REPLAY_INDEX__) ? window.__REPLAY_INDEX__ : [];
-    const latestKey = items.length ? ((typeof items[0] === "string") ? items[0] : (items[0].id || items[0].key)) : null;
-    const key = replayDailyKey || latestKey;
-
-    if (key) {
-      try {
-        const rr = await fetch(`/replays/${encodeURIComponent(key)}.json`, { cache: "no-store" });
-        window.__REPLAY_LOADED__ = rr.ok ? await rr.json() : null;
-      } catch {
-        window.__REPLAY_LOADED__ = null;
-      }
-      initReplayMode(key);
-    } else {
-      window.__REPLAY_LOADED__ = null;
-      initReplayMode("—");
-    }
-
-    installBotCardClicks(() => state);
-    installBotCardsOverlay();
-    renderSeasonLeaderboard();
-    renderFrame();
+  } else {
+    initReplayMode(replayDailyKey);
   }
 
-  bootViewer();
+  // history always visible
+  renderHistory();
 
-// periodic sim
+  // periodic sim
   setInterval(() => {
     if (MODE !== "LIVE") return;
     if (!running) return;
@@ -1828,5 +1779,19 @@ function installBotCardsOverlay() {
   }, 16);
 
   // enable replay button when replay exists for today
-  function refreshReplayButton() { /* viewer-only: disabled */ }
+  function refreshReplayButton() {
+    if (MODE !== "LIVE") return;
+    const rep = loadReplayForKey(getDailyKey(new Date()));
+    btnOpenReplay.disabled = !rep;
+  }
+  setInterval(refreshReplayButton, 1000);
+
+  // first feed line
+  if (MODE === "LIVE") pushFeed("Ready ✅ (LIVE)");
+  else pushFeed("Replay mode ✅ (SPACE to pause/play)");
+
+  installBotCardClicks(() => state);
+  installBotCardsOverlay();
+  renderSeasonLeaderboard();
+  renderFrame();
 })();

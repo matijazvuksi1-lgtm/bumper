@@ -1,6 +1,6 @@
 {
-  "name": "bumper-royale-replays",
-  "version": "1.2.0",
+  "name": "bumper-royale",
+  "version": "1.0.0",
   "private": true,
   "engines": {
     "node": ">=18"

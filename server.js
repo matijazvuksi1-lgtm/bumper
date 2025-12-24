@@ -1,4 +1,4 @@
-// server.js — FIXED for /?replay=... (Render compatible)
+// server.js — Render compatible static server (FIXED for /?replay=...)
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -14,10 +14,7 @@ const MIME = {
 };
 
 http.createServer((req, res) => {
-  // ✅ 1) Remove query FIRST
   let pathname = (req.url || "/").split("?")[0];
-
-  // ✅ 2) Map "/" to index.html (works for "/?replay=...")
   if (pathname === "/") pathname = "/index.html";
 
   const filePath = path.join(ROOT, pathname);
@@ -33,5 +30,5 @@ http.createServer((req, res) => {
     res.end(data);
   });
 }).listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Game running on port ${PORT}`);
 });

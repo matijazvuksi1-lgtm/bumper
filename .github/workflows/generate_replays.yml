@@ -1,10 +1,8 @@
-name: Generate Replays (06:00 / 18:00 Zagreb)
+name: Generate Replays
 
 on:
   schedule:
-    # GitHub Actions uses UTC for cron.
-    # This runs at 05:00 and 17:00 UTC (commonly = 06:00 and 18:00 Zagreb, DST may shift by 1h).
-    - cron: "0 5,17 * * *"
+    - cron: "0 5,17 * * *" # 05:00 and 17:00 UTC ~ 06:00/18:00 Zagreb (DST may shift by 1h)
   workflow_dispatch:
 
 jobs:
@@ -12,14 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Generate replay files
         run: node scripts/generate_replay.js
-
       - name: Commit & push
         run: |
           git config user.name "github-actions[bot]"

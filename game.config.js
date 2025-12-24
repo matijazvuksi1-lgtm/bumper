@@ -5,10 +5,10 @@ window.GAME_CONFIG = {
   // ============================
   meta: {
     timezone: "Europe/Zagreb",
-    dailyResetHour: 6,
+    dailyResetHour: 12,
     dailyResetMinute: 0,
     gameName: "Bumper Royale",
-    version: "1.2.0-replay-server"
+    version: "1.0.1-fast-zone"
   },
 
   // ============================
@@ -56,8 +56,8 @@ window.GAME_CONFIG = {
   // MOVEMENT
   // ============================
   motion: {
-    minSpeed: 2.3,
-    maxSpeed: 5.2
+    minSpeed: 1,
+    maxSpeed: 2
   },
 
   // ============================
@@ -85,12 +85,12 @@ window.GAME_CONFIG = {
   // 🔥 FAST ZONE SETTINGS
   // ============================
   zone: {
-    warmupTicks: 500,        // starts much sooner
-    shrinkEveryTicks: 300,   // shrinks more often
-    shrinkStep: 12,         // bigger shrink each time
+    warmupTicks: 1000,        // starts much sooner
+    shrinkEveryTicks: 500,   // shrinks more often
+    shrinkStep: 14,         // bigger shrink each time
     endRadius: 40,          // tighter final fights
-    shiftMax: 100,          // more zone movement
-    moveDurationTicks: 400   // faster zone movement
+    shiftMax: 180,          // more zone movement
+    moveDurationTicks: 500   // faster zone movement
   },
 
   // ============================
