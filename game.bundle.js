@@ -344,6 +344,10 @@ const seasonMeta = $("seasonMeta");
   const canvas = $("c");
   const ctx = canvas.getContext("2d");
 
+  // Mobile UX
+  canvas.style.touchAction = "none";
+  canvas.style.webkitTapHighlightColor = "transparent";
+
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(window.innerWidth * dpr);

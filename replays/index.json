@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 [
   {
     "id": "20251224-A",
@@ -5,3 +6,6 @@
     "winner": "P25"
   }
 ]
+=======
+[]
+>>>>>>> 1abe410 (Mobile support + replay-only physics fix)

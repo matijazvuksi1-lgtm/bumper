@@ -56,8 +56,8 @@ window.GAME_CONFIG = {
   // MOVEMENT
   // ============================
   motion: {
-    minSpeed: 1,
-    maxSpeed: 2
+    minSpeed: 2.3,
+    maxSpeed: 5.2
   },
 
   // ============================
@@ -85,12 +85,12 @@ window.GAME_CONFIG = {
   // 🔥 FAST ZONE SETTINGS
   // ============================
   zone: {
-    warmupTicks: 1000,        // starts much sooner
-    shrinkEveryTicks: 500,   // shrinks more often
+    warmupTicks: 25,        // starts much sooner
+    shrinkEveryTicks: 22,   // shrinks more often
     shrinkStep: 14,         // bigger shrink each time
-    endRadius: 40,          // tighter final fights
+    endRadius: 70,          // tighter final fights
     shiftMax: 180,          // more zone movement
-    moveDurationTicks: 500   // faster zone movement
+    moveDurationTicks: 45   // faster zone movement
   },
 
   // ============================
