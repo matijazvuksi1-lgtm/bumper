@@ -1,541 +1,580 @@
-/**
- * REAL replay generator (no browser LocalStorage)
- *
- * Runs in GitHub Actions (or locally) and writes:
- *  - replays/<YYYYMMDD-A|B>.json  (frames + summary)
- *  - replays/index.json           (latest first)
- *
- * The viewer (game.bundle.js) loads /replays/<id>.json and animates frames.
- */
+// scripts/generate_replay.js
+// REAL server-side match generator (same physics/damage as browser) -> saves /replays/<key>.json
+// No LocalStorage. Everyone shares the same replays.
 
 const fs = require("fs");
 const path = require("path");
 
-// -----------------------------
-// helpers
-// -----------------------------
-function pad2(n) { return String(n).padStart(2, "0"); }
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+// ---------- helpers (copied from client) ----------
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
 function hypot(x, y) { return Math.hypot(x, y); }
-
-function hash32(str) {
-  // xmur3-ish
-  let h = 1779033703 ^ str.length;
-  for (let i = 0; i < str.length; i++) {
-    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
-    h = (h << 13) | (h >>> 19);
-  }
-  h = Math.imul(h ^ (h >>> 16), 2246822507);
-  h = Math.imul(h ^ (h >>> 13), 3266489909);
-  return (h ^ (h >>> 16)) >>> 0;
-}
+function pad2(n) { return String(n).padStart(2, "0"); }
 
 function mulberry32(seed) {
-  let a = seed >>> 0;
+  let t = seed >>> 0;
   return function () {
-    a += 0x6D2B79F5;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-function tzParts(date, tz) {
+function hash32(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function getTzParts(date, timeZone) {
   const fmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
+    timeZone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false
   });
   const parts = fmt.formatToParts(date);
-  const map = {};
-  for (const p of parts) if (p.type !== "literal") map[p.type] = p.value;
-  return {
-    year: +map.year,
-    month: +map.month,
-    day: +map.day,
-    hour: +map.hour,
-    minute: +map.minute,
-    second: +map.second
-  };
+  const out = {};
+  for (const p of parts) if (p.type !== "literal") out[p.type] = p.value;
+  return { year: +out.year, month: +out.month, day: +out.day, hour: +out.hour, minute: +out.minute, second: +out.second };
 }
 
-function make12hKey(now, tz = "Europe/Zagreb") {
-  const p = tzParts(now, tz);
+// 12h key (A=06:00, B=18:00) in Zagreb
+function make12hKey(date = new Date(), tz = "Europe/Zagreb") {
+  const p = getTzParts(date, tz);
   const slot = (p.hour >= 6 && p.hour < 18) ? "A" : "B";
-  // before 06:00 => previous day B
-  let y = p.year, m = p.month, d = p.day;
-  if (p.hour < 6) {
-    const prev = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const q = tzParts(prev, tz);
-    y = q.year; m = q.month; d = q.day;
-  }
-  return `${y}${pad2(m)}${pad2(d)}-${slot}`;
+  return `${p.year}${pad2(p.month)}${pad2(p.day)}-${slot}`;
 }
+function dailySeedFromKey(key) { return hash32(String(key)); }
 
-function ensureDir(p) { fs.mkdirSync(p, { recursive: true }); }
-
-// -----------------------------
-// config (mirrors your client config where it matters)
-// -----------------------------
-const CFG = {
-  timezone: "Europe/Zagreb",
+// ---------- CONFIG (matches game.config defaults you use) ----------
+const GAME = {
   players: 30,
   tickMs: 16,
-  sampleEveryTicks: 2,
-  maxTicks: 9000,
+  subSteps: 2,
 
-  // world
-  worldW: 1200,
-  worldH: 900,
-
-  // physics
   friction: 0.9965,
   restitution: 0.985,
   pushApart: 0.95,
 
-  // movement
   minSpeed: 2.3,
   maxSpeed: 5.2,
 
-  // player
-  baseHp: 100,
+  steerJitter: 0.10,
+  steerForce: 0.060,
+  zoneSteerBoost: 0.13,
 
-  // damage
+  aggressive: { seekRange: 260, seekForce: 0.085 },
+  balanced: { seekRange: 200, seekForce: 0.060, seekChance: 0.20 },
+  coward: { fleeHp: 35, fleeForce: 0.10, fleeRange: 300 },
+
+  baseRadius: 11,
+  minRadiusScale: 0.70,
+  maxRadiusScale: 1.45,
+  massMin: 0.75,
+  massMax: 1.55,
+
   baseContactDamage: 2,
   impactDamageScale: 1.15,
   minImpactForDamage: 0.75,
   damageCooldownTicks: 8,
 
-  // zone
-  zone: {
-    warmupTicks: 25,
-    shrinkEveryTicks: 22,
-    shrinkStep: 14,
-    endRadius: 70,
-    shiftMax: 180,
-    moveDurationTicks: 45
-  },
+  zoneWarmupTicks: 25,
+  zoneShrinkEveryTicks: 22,
+  zoneShrinkStep: 14,
+  zoneEndRadius: 70,
+  zoneShiftMax: 180,
+  zoneMoveDurationTicks: 45,
 
-  // AI
-  ai: {
-    steerJitter: 0.10,
-    steerForce: 0.060,
-    zoneSteerBoost: 0.13,
-    aggressive: { seekRange: 260, seekForce: 0.085, turnAssist: 0.08 },
-    balanced: { seekRange: 200, seekForce: 0.060, seekChance: 0.20 },
-    coward: { fleeHp: 35, fleeRange: 300, fleeForce: 0.10, turnAssist: 0.10 }
-  },
+  replaySampleEveryTicks: 2,
+  replayMaxFrames: 9000,
 
-  rarity: {
-    tiers: [
-      { name: "Common", weight: 35, hpMult: 1.00, speedMult: 1.00, dmgMult: 1.00, defMult: 1.00, massMult: 1.00, color: "#9aa0a6", icon: "⚪" },
-      { name: "Uncommon", weight: 28, hpMult: 1.05, speedMult: 1.02, dmgMult: 1.04, defMult: 1.02, massMult: 1.02, color: "#34c759", icon: "🟢" },
-      { name: "Rare", weight: 20, hpMult: 1.10, speedMult: 1.04, dmgMult: 1.08, defMult: 1.05, massMult: 1.03, color: "#0a84ff", icon: "🔵" },
-      { name: "Epic", weight: 10, hpMult: 1.14, speedMult: 1.06, dmgMult: 1.12, defMult: 1.08, massMult: 1.04, color: "#bf5af2", icon: "🟣" },
-      { name: "Legendary", weight: 7, hpMult: 1.18, speedMult: 1.08, dmgMult: 1.15, defMult: 1.12, massMult: 1.05, color: "#ffd60a", icon: "🟡" }
-    ],
-    guaranteedLegendary: 2
-  }
+  timezone: "Europe/Zagreb"
 };
 
-// -----------------------------
-// sim helpers
-// -----------------------------
-function pickRarity(rng, i, legendaryBudget) {
-  // guarantee first N are legendary (simple + deterministic)
-  if (i < CFG.rarity.guaranteedLegendary) return CFG.rarity.tiers.find(t => t.name === "Legendary");
+// ---------- BOT PROFILES (same fixed stats as your client bundle) ----------
+const BOT_PROFILES = {
+  1: { rarityName: "Epic", personality: "Balanced", speed: 63, dmg: 61, def: 80, hpStat: 85, hpMax: 180 },
+  2: { rarityName: "Epic", personality: "Balanced", speed: 73, dmg: 79, def: 71, hpStat: 84, hpMax: 179 },
+  3: { rarityName: "Common", personality: "Balanced", speed: 48, dmg: 63, def: 61, hpStat: 38, hpMax: 119 },
+  4: { rarityName: "Legendary", personality: "Balanced", speed: 92, dmg: 73, def: 75, hpStat: 80, hpMax: 174 },
+  5: { rarityName: "Epic", personality: "Survivor", speed: 56, dmg: 82, def: 75, hpStat: 72, hpMax: 164 },
+  6: { rarityName: "Common", personality: "Aggressive", speed: 51, dmg: 65, def: 52, hpStat: 54, hpMax: 140 },
+  7: { rarityName: "Epic", personality: "Aggressive", speed: 73, dmg: 71, def: 71, hpStat: 61, hpMax: 149 },
+  8: { rarityName: "Rare", personality: "Balanced", speed: 75, dmg: 66, def: 62, hpStat: 73, hpMax: 165 },
+  9: { rarityName: "Common", personality: "Balanced", speed: 65, dmg: 50, def: 53, hpStat: 56, hpMax: 144 },
+  10:{ rarityName: "Uncommon", personality: "Balanced", speed: 58, dmg: 48, def: 53, hpStat: 55, hpMax: 143 },
+  11:{ rarityName: "Rare", personality: "Survivor", speed: 68, dmg: 54, def: 74, hpStat: 68, hpMax: 158 },
+  12:{ rarityName: "Uncommon", personality: "Aggressive", speed: 58, dmg: 66, def: 55, hpStat: 60, hpMax: 148 },
+  13:{ rarityName: "Common", personality: "Balanced", speed: 45, dmg: 44, def: 44, hpStat: 47, hpMax: 131 },
+  14:{ rarityName: "Rare", personality: "Aggressive", speed: 77, dmg: 71, def: 62, hpStat: 70, hpMax: 160 },
+  15:{ rarityName: "Epic", personality: "Survivor", speed: 66, dmg: 69, def: 86, hpStat: 81, hpMax: 176 },
+  16:{ rarityName: "Uncommon", personality: "Balanced", speed: 52, dmg: 56, def: 56, hpStat: 58, hpMax: 146 },
+  17:{ rarityName: "Rare", personality: "Balanced", speed: 71, dmg: 66, def: 63, hpStat: 69, hpMax: 159 },
+  18:{ rarityName: "Common", personality: "Aggressive", speed: 53, dmg: 58, def: 45, hpStat: 52, hpMax: 138 },
+  19:{ rarityName: "Uncommon", personality: "Balanced", speed: 59, dmg: 55, def: 55, hpStat: 57, hpMax: 145 },
+  20:{ rarityName: "Epic", personality: "Aggressive", speed: 74, dmg: 83, def: 70, hpStat: 75, hpMax: 168 },
+  21:{ rarityName: "Legendary", personality: "Aggressive", speed: 90, dmg: 86, def: 74, hpStat: 88, hpMax: 186 },
+  22:{ rarityName: "Uncommon", personality: "Survivor", speed: 54, dmg: 52, def: 62, hpStat: 60, hpMax: 148 },
+  23:{ rarityName: "Rare", personality: "Balanced", speed: 70, dmg: 60, def: 66, hpStat: 70, hpMax: 160 },
+  24:{ rarityName: "Epic", personality: "Balanced", speed: 79, dmg: 72, def: 71, hpStat: 78, hpMax: 172 },
+  25:{ rarityName: "Legendary", personality: "Survivor", speed: 88, dmg: 74, def: 89, hpStat: 92, hpMax: 192 },
+  26:{ rarityName: "Uncommon", personality: "Aggressive", speed: 62, dmg: 64, def: 51, hpStat: 63, hpMax: 151 },
+  27:{ rarityName: "Rare", personality: "Aggressive", speed: 60, dmg: 73, def: 64, hpStat: 64, hpMax: 153 },
+  28:{ rarityName: "Common", personality: "Balanced", speed: 44, dmg: 40, def: 49, hpStat: 48, hpMax: 132 },
+  29:{ rarityName: "Rare", personality: "Balanced", speed: 72, dmg: 67, def: 47, hpStat: 75, hpMax: 168 },
+  30:{ rarityName: "Common", personality: "Aggressive", speed: 43, dmg: 52, def: 37, hpStat: 54, hpMax: 140 },
+};
 
-  const total = CFG.rarity.tiers.reduce((s, t) => s + t.weight, 0);
-  let roll = rng() * total;
-  for (const t of CFG.rarity.tiers) {
-    roll -= t.weight;
-    if (roll <= 0) return t;
-  }
-  return CFG.rarity.tiers[0];
-}
+// rarity tiers (icons/colors)
+const TIERS = [
+  { name: "Common",    weight: 35, hpMult: 1.00, speedMult: 1.00, dmgMult: 1.00, defMult: 1.00, massMult: 1.00, icon: "⚪" },
+  { name: "Uncommon",  weight: 28, hpMult: 1.05, speedMult: 1.02, dmgMult: 1.04, defMult: 1.02, massMult: 1.02, icon: "🟢" },
+  { name: "Rare",      weight: 20, hpMult: 1.10, speedMult: 1.04, dmgMult: 1.08, defMult: 1.05, massMult: 1.03, icon: "🔵" },
+  { name: "Epic",      weight: 10, hpMult: 1.14, speedMult: 1.06, dmgMult: 1.12, defMult: 1.08, massMult: 1.04, icon: "🟣" },
+  { name: "Legendary", weight: 7,  hpMult: 1.18, speedMult: 1.08, dmgMult: 1.15, defMult: 1.12, massMult: 1.05, icon: "🟡" }
+];
+function getTierByName(name) { return TIERS.find(t => t.name === name) || TIERS[0]; }
 
-function pickPersonality(rng) {
-  const r = rng();
-  if (r < 0.34) return "aggressive";
-  if (r < 0.78) return "balanced";
-  return "coward";
-}
+// ---------- world size (Node) ----------
+const WORLD = { w: 1200, h: 800 };
 
-function spawnPlayers(rng, zone) {
-  const players = [];
-  for (let i = 0; i < CFG.players; i++) {
-    const rarity = pickRarity(rng, i);
-    const personality = pickPersonality(rng);
-    const angle = rng() * Math.PI * 2;
-    const rad = (zone.r * 0.65) * Math.sqrt(rng());
-    const x = zone.cx + Math.cos(angle) * rad;
-    const y = zone.cy + Math.sin(angle) * rad;
-
-    const hpMax = Math.round(CFG.baseHp * rarity.hpMult);
-    const p = {
-      id: i + 1,
-      name: `BOT-${String(i + 1).padStart(2, "0")}`,
-      x, y,
-      vx: (rng() - 0.5) * 2,
-      vy: (rng() - 0.5) * 2,
-      hpMax,
-      hp: hpMax,
-      alive: true,
-      kills: 0,
-      dmgDealt: 0,
-      dmgTaken: 0,
-      hitFlash: 0,
-      hitCd: 0,
-      personality,
-      rarity,
-      speedMult: rarity.speedMult,
-      dmgMult: rarity.dmgMult,
-      defMult: rarity.defMult,
-      mass: rarity.massMult,
-    };
-    players.push(p);
-  }
-  return players;
-}
-
+// ---------- zone ----------
 function newZone(rng) {
-  return {
-    cx: CFG.worldW / 2,
-    cy: CFG.worldH / 2,
-    r: 520,
-    startR: 520,
-    fromX: CFG.worldW / 2,
-    fromY: CFG.worldH / 2,
-    toX: CFG.worldW / 2,
-    toY: CFG.worldH / 2,
-    moveT: 1,
-    moveStartTick: 0,
-    nextShrinkTick: CFG.zone.warmupTicks
+  const baseR = Math.min(WORLD.w, WORLD.h) * 0.43;
+  const startR = Math.max(280, Math.min(520, Math.floor(baseR)));
+  const cx = WORLD.w * 0.5 + (rng() - 0.5) * 30;
+  const cy = WORLD.h * 0.5 + (rng() - 0.5) * 30;
+  return { cx, cy, r: startR, startR, fromX: cx, fromY: cy, toX: cx, toY: cy, moveT: 1, moveStartTick: 0 };
+}
+function scheduleZoneMove(zone, rng, tick) {
+  zone.fromX = zone.cx; zone.fromY = zone.cy;
+  const ang = rng() * Math.PI * 2;
+  const mag = rng() * GAME.zoneShiftMax;
+  const tx = zone.cx + Math.cos(ang) * mag;
+  const ty = zone.cy + Math.sin(ang) * mag;
+  const pad = Math.max(40, zone.r + 20);
+  zone.toX = clamp(tx, pad, WORLD.w - pad);
+  zone.toY = clamp(ty, pad, WORLD.h - pad);
+  zone.moveT = 0;
+  zone.moveStartTick = tick;
+}
+function updateZone(zone, tick) {
+  if (zone.moveT < 1) {
+    const t = clamp((tick - zone.moveStartTick) / GAME.zoneMoveDurationTicks, 0, 1);
+    zone.moveT = t;
+    const s = t * t * (3 - 2 * t);
+    zone.cx = lerp(zone.fromX, zone.toX, s);
+    zone.cy = lerp(zone.fromY, zone.toY, s);
+  }
+}
+
+// ---------- sizing ----------
+function hpToScale(hp, hpMax = 100) {
+  const t = clamp(hpMax ? (hp / hpMax) : 0, 0, 1);
+  const s = t * t * (3 - 2 * t);
+  return lerp(GAME.minRadiusScale, GAME.maxRadiusScale, s);
+}
+function radiusOf(p) { return GAME.baseRadius * hpToScale(p.hp, p.hpMax || 100); }
+
+// ---------- player creation ----------
+function clampMult(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function jitterByRarityName(name) {
+  if (name === "Legendary") return 0.035;
+  if (name === "Epic") return 0.045;
+  if (name === "Rare") return 0.055;
+  if (name === "Uncommon") return 0.060;
+  return 0.065;
+}
+function applyRarityToPlayer(p, rarity, rng) {
+  p.rarity = rarity;
+  const j = jitterByRarityName(rarity.name);
+  const jmul = () => (1 + (rng() - 0.5) * 2 * j);
+  p.speedMult = clampMult((rarity.speedMult || 1) * jmul(), 0.80, 1.60);
+  p.dmgMult   = clampMult((rarity.dmgMult   || 1) * jmul(), 0.80, 1.80);
+  p.defMult   = clampMult((rarity.defMult   || 1) * jmul(), 0.80, 1.80);
+  p.hpMax = Math.max(1, Math.round(100 * (rarity.hpMult || 1) * jmul()));
+  p.hp = Math.min(p.hp, p.hpMax);
+}
+function createPlayer(id, rng, zone) {
+  const prof = BOT_PROFILES[id] || BOT_PROFILES[1];
+  const rarity = getTierByName(prof.rarityName);
+
+  const massBase = lerp(GAME.massMin, GAME.massMax, rng());
+  const ang = rng() * Math.PI * 2;
+  const rad = rng() * (zone.r - 80);
+  const x = zone.cx + Math.cos(ang) * rad;
+  const y = zone.cy + Math.sin(ang) * rad;
+
+  const dir = rng() * Math.PI * 2;
+  const sp = lerp(GAME.minSpeed, GAME.maxSpeed, rng());
+
+  const p = {
+    id,
+    name: `P${String(id).padStart(2, "0")}`,
+    personality: prof.personality,
+    rarity,
+    speedMult: 1, dmgMult: 1, defMult: 1,
+    hpMax: prof.hpMax || 100,
+    x, y,
+    vx: Math.cos(dir) * sp,
+    vy: Math.sin(dir) * sp,
+    dir,
+    massBase,
+    mass: massBase,
+    invMass: 1 / massBase,
+    hp: prof.hpMax || 100,
+    alive: true,
+    hitCd: 0,
+    hitFlash: 0,
+    kills: 0,
+    dmgDealt: 0,
+    dmgTaken: 0,
+    targetId: null,
+    speedStat: prof.speed,
+    dmgStat: prof.dmg,
+    defStat: prof.def,
+    hpStat: prof.hpStat
   };
+
+  p.mass = p.massBase * clampMult(rarity.massMult || 1, 0.8, 1.4);
+  p.invMass = 1 / p.mass;
+  return p;
 }
 
-function alivePlayers(players) {
-  return players.filter(p => p.alive);
+// ---------- combat / collisions ----------
+function eliminate(victim, killerName, events, tick) {
+  if (!victim.alive) return;
+  victim.alive = false;
+  victim.hp = 0;
+  victim.vx = victim.vy = 0;
+  events.push({ tick, type: "kill", victim: victim.name, killer: killerName || null });
+}
+function contactDamage(a, b, impact, nx, ny, events, tick) {
+  if (impact < GAME.minImpactForDamage) return;
+  const base = Math.max(1, Math.floor(GAME.baseContactDamage + impact * GAME.impactDamageScale));
+
+  const apply = (victim, attacker) => {
+    if (!victim.alive || !attacker.alive) return;
+    if (victim.hitCd !== 0) return;
+
+    const atkT = clamp((attacker.dmgStat ?? 50) / 100, 0, 1);
+    const defT = clamp((victim.defStat ?? 50) / 100, 0, 1);
+    const atkF = lerp(0.75, 1.55, atkT) * (attacker.dmgMult || 1);
+    const defF = lerp(0.75, 1.60, defT) * (victim.defMult || 1);
+    const dmg = Math.max(1, Math.floor((base * atkF) / defF));
+
+    victim.hp -= dmg;
+    attacker.dmgDealt += dmg;
+    victim.dmgTaken += dmg;
+    victim.hitCd = GAME.damageCooldownTicks;
+    victim.hitFlash = 8;
+
+    events.push({ tick, type: "hit", attacker: attacker.name, victim: victim.name, dmg });
+
+    if (victim.hp <= 0) {
+      eliminate(victim, attacker.name, events, tick);
+      attacker.kills++;
+    }
+  };
+
+  apply(a, b);
+  apply(b, a);
+}
+function bounceOffZone(state, p) {
+  const z = state.zone;
+  const r = radiusOf(p);
+  const dx = p.x - z.cx, dy = p.y - z.cy;
+  const d = hypot(dx, dy) || 1;
+  const limit = z.r - r;
+  if (d <= limit) return;
+  const nx = dx / d, ny = dy / d;
+
+  p.x = z.cx + nx * limit;
+  p.y = z.cy + ny * limit;
+
+  const dot = p.vx * nx + p.vy * ny;
+  p.vx = (p.vx - 2 * dot * nx) * GAME.restitution;
+  p.vy = (p.vy - 2 * dot * ny) * GAME.restitution;
+}
+function collidePlayers(a, b, events, tick) {
+  if (!a.alive || !b.alive) return;
+
+  const ra = radiusOf(a);
+  const rb = radiusOf(b);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 0.0001;
+  const minDist = ra + rb;
+  if (dist >= minDist) return;
+
+  const nx = dx / dist;
+  const ny = dy / dist;
+
+  const overlap = minDist - dist;
+  const invSum = a.invMass + b.invMass;
+
+  const ax = nx * overlap * (a.invMass / invSum) * GAME.pushApart;
+  const ay = ny * overlap * (a.invMass / invSum) * GAME.pushApart;
+  const bx = nx * overlap * (b.invMass / invSum) * GAME.pushApart;
+  const by = ny * overlap * (b.invMass / invSum) * GAME.pushApart;
+
+  a.x -= ax; a.y -= ay;
+  b.x += bx; b.y += by;
+
+  const rvx = b.vx - a.vx;
+  const rvy = b.vy - a.vy;
+  const velAlongNormal = rvx * nx + rvy * ny;
+  if (velAlongNormal > 0) return;
+
+  const j = -(1 + GAME.restitution) * velAlongNormal / invSum;
+  const impX = j * nx;
+  const impY = j * ny;
+
+  a.vx -= impX * a.invMass;
+  a.vy -= impY * a.invMass;
+  b.vx += impX * b.invMass;
+  b.vy += impY * b.invMass;
+
+  contactDamage(a, b, Math.abs(velAlongNormal), nx, ny, events, tick);
 }
 
-function closestTarget(me, players) {
+// ---------- AI ----------
+function findNearestAliveEnemy(state, p, maxRange) {
   let best = null;
-  let bestD2 = Infinity;
-  for (const p of players) {
-    if (!p.alive || p.id === me.id) continue;
-    const dx = p.x - me.x;
-    const dy = p.y - me.y;
+  let bestD = maxRange * maxRange;
+  for (const q of state.players) {
+    if (!q.alive || q.id === p.id) continue;
+    const dx = q.x - p.x, dy = q.y - p.y;
     const d2 = dx * dx + dy * dy;
-    if (d2 < bestD2) { bestD2 = d2; best = p; }
+    if (d2 < bestD) { bestD = d2; best = q; }
   }
   return best;
 }
+function aiSteer(state, p) {
+  p.dir += (state.rng() - 0.5) * 2 * GAME.steerJitter;
 
-function zoneVector(p, zone) {
-  const dx = zone.cx - p.x;
-  const dy = zone.cy - p.y;
-  const d = Math.max(1e-6, hypot(dx, dy));
-  return { dx: dx / d, dy: dy / d, dist: d };
-}
+  const z = state.zone;
+  const dxz = p.x - z.cx, dyz = p.y - z.cy;
+  const dz = Math.hypot(dxz, dyz) || 1;
+  const edgeT = clamp((dz - (z.r * 0.75)) / (z.r * 0.25), 0, 1);
+  if (edgeT > 0) {
+    const toward = Math.atan2(z.cy - p.y, z.cx - p.x);
+    const blend = GAME.zoneSteerBoost * edgeT;
+    let delta = toward - p.dir;
+    while (delta > Math.PI) delta -= 2 * Math.PI;
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    p.dir += delta * blend;
+  }
 
-function stepAI(p, players, zone, rng) {
-  if (!p.alive) return { ax: 0, ay: 0 };
-  const alive = alivePlayers(players);
-  const zv = zoneVector(p, zone);
-  const edge = zone.r - zv.dist;
-
-  let ax = (rng() - 0.5) * CFG.ai.steerJitter;
-  let ay = (rng() - 0.5) * CFG.ai.steerJitter;
-
-  // zone pull (stronger near edge)
-  const edgeBoost = clamp(1 - edge / 120, 0, 1) * CFG.ai.zoneSteerBoost;
-  ax += zv.dx * edgeBoost;
-  ay += zv.dy * edgeBoost;
-
-  const target = closestTarget(p, players);
-  if (!target) return { ax, ay };
-
-  const dx = target.x - p.x;
-  const dy = target.y - p.y;
-  const d = Math.max(1e-6, hypot(dx, dy));
-  const ux = dx / d, uy = dy / d;
-
-  if (p.personality === "aggressive") {
-    if (d < CFG.ai.aggressive.seekRange) {
-      ax += ux * CFG.ai.aggressive.seekForce;
-      ay += uy * CFG.ai.aggressive.seekForce;
+  if (p.personality === "Aggressive") {
+    const cfg = GAME.aggressive;
+    const target = findNearestAliveEnemy(state, p, cfg.seekRange);
+    if (target) {
+      const ang = Math.atan2(target.y - p.y, target.x - p.x);
+      let delta = ang - p.dir;
+      while (delta > Math.PI) delta -= 2 * Math.PI;
+      while (delta < -Math.PI) delta += 2 * Math.PI;
+      p.dir += delta * 0.08;
+      p.vx += Math.cos(ang) * cfg.seekForce;
+      p.vy += Math.sin(ang) * cfg.seekForce;
     }
-  } else if (p.personality === "balanced") {
-    if (d < CFG.ai.balanced.seekRange && rng() < CFG.ai.balanced.seekChance) {
-      ax += ux * CFG.ai.balanced.seekForce;
-      ay += uy * CFG.ai.balanced.seekForce;
+  } else if (p.personality === "Survivor") {
+    const cfg = GAME.coward;
+    let alive = 0;
+    for (const q of state.players) if (q.alive) alive++;
+
+    if (p.hp <= cfg.fleeHp) {
+      const threat = findNearestAliveEnemy(state, p, cfg.fleeRange);
+      if (threat) {
+        const angAway = Math.atan2(p.y - threat.y, p.x - threat.x);
+        let delta = angAway - p.dir;
+        while (delta > Math.PI) delta -= 2 * Math.PI;
+        while (delta < -Math.PI) delta += 2 * Math.PI;
+        p.dir += delta * 0.10;
+        p.vx += Math.cos(angAway) * cfg.fleeForce;
+        p.vy += Math.sin(angAway) * cfg.fleeForce;
+      }
+    } else {
+      const bcfg = GAME.balanced;
+      const prob = (alive <= 6) ? 0.35 : 0.18;
+      const forceMul = (alive <= 6) ? 0.85 : 0.45;
+
+      if (state.rng() < prob) {
+        const target = findNearestAliveEnemy(state, p, bcfg.seekRange);
+        if (target) {
+          const ang = Math.atan2(target.y - p.y, target.x - p.x);
+          p.vx += Math.cos(ang) * bcfg.seekForce * forceMul;
+          p.vy += Math.sin(ang) * bcfg.seekForce * forceMul;
+        }
+      }
     }
   } else {
-    // coward
-    if (p.hp <= CFG.ai.coward.fleeHp && d < CFG.ai.coward.fleeRange) {
-      ax -= ux * CFG.ai.coward.fleeForce;
-      ay -= uy * CFG.ai.coward.fleeForce;
-    }
-  }
-
-  return { ax, ay };
-}
-
-function capSpeed(p) {
-  const v = hypot(p.vx, p.vy);
-  const maxV = CFG.maxSpeed * (p.speedMult || 1);
-  const minV = CFG.minSpeed * 0.25;
-  if (v > maxV) {
-    p.vx = (p.vx / v) * maxV;
-    p.vy = (p.vy / v) * maxV;
-  } else if (v < minV) {
-    // tiny nudge to avoid dead stop
-    const k = (minV / Math.max(1e-6, v));
-    p.vx *= k;
-    p.vy *= k;
-  }
-}
-
-function stepZone(zone, tick, rng) {
-  if (tick < CFG.zone.warmupTicks) return;
-  if (tick < zone.nextShrinkTick) {
-    // move zone center
-    const t = clamp((tick - zone.moveStartTick) / CFG.zone.moveDurationTicks, 0, 1);
-    zone.moveT = t;
-    zone.cx = zone.fromX + (zone.toX - zone.fromX) * t;
-    zone.cy = zone.fromY + (zone.toY - zone.fromY) * t;
-    return;
-  }
-
-  // shrink
-  zone.r = Math.max(CFG.zone.endRadius, zone.r - CFG.zone.shrinkStep);
-  zone.nextShrinkTick += CFG.zone.shrinkEveryTicks;
-
-  // pick new center target
-  zone.fromX = zone.cx;
-  zone.fromY = zone.cy;
-  const ang = rng() * Math.PI * 2;
-  const sh = rng() * CFG.zone.shiftMax;
-  zone.toX = clamp(zone.cx + Math.cos(ang) * sh, 200, CFG.worldW - 200);
-  zone.toY = clamp(zone.cy + Math.sin(ang) * sh, 160, CFG.worldH - 160);
-  zone.moveStartTick = tick;
-  zone.moveT = 0;
-}
-
-function pushBackIntoZone(p, zone) {
-  const dx = p.x - zone.cx;
-  const dy = p.y - zone.cy;
-  const d = Math.max(1e-6, hypot(dx, dy));
-  if (d <= zone.r) return;
-  // project onto circle
-  const ux = dx / d, uy = dy / d;
-  p.x = zone.cx + ux * zone.r;
-  p.y = zone.cy + uy * zone.r;
-  // bounce inward
-  const vn = p.vx * ux + p.vy * uy;
-  p.vx -= (1 + CFG.restitution) * vn * ux;
-  p.vy -= (1 + CFG.restitution) * vn * uy;
-}
-
-function resolveCollisions(players) {
-  // simple circle collisions with soft push apart
-  for (let i = 0; i < players.length; i++) {
-    const a = players[i];
-    if (!a.alive) continue;
-    for (let j = i + 1; j < players.length; j++) {
-      const b = players[j];
-      if (!b.alive) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const d = Math.max(1e-6, hypot(dx, dy));
-      const ra = 11 * (a.hp / (a.hpMax || 100));
-      const rb = 11 * (b.hp / (b.hpMax || 100));
-      const minD = ra + rb;
-      if (d >= minD) continue;
-
-      const ux = dx / d, uy = dy / d;
-      const overlap = (minD - d) * CFG.pushApart;
-      a.x -= ux * overlap * 0.5;
-      a.y -= uy * overlap * 0.5;
-      b.x += ux * overlap * 0.5;
-      b.y += uy * overlap * 0.5;
-
-      // velocity exchange (approx)
-      const rvx = b.vx - a.vx;
-      const rvy = b.vy - a.vy;
-      const rel = rvx * ux + rvy * uy;
-      if (rel > 0) continue;
-
-      const invMassA = 1 / Math.max(0.25, a.mass || 1);
-      const invMassB = 1 / Math.max(0.25, b.mass || 1);
-      const jImpulse = -(1 + CFG.restitution) * rel / (invMassA + invMassB);
-      a.vx -= (jImpulse * invMassA) * ux;
-      a.vy -= (jImpulse * invMassA) * uy;
-      b.vx += (jImpulse * invMassB) * ux;
-      b.vy += (jImpulse * invMassB) * uy;
-
-      // damage on hard impacts
-      const impact = Math.abs(rel);
-      if (impact >= CFG.minImpactForDamage) {
-        if (a.hitCd <= 0) dealDamage(a, b, impact);
-        if (b.hitCd <= 0) dealDamage(b, a, impact);
+    const cfg = GAME.balanced;
+    if (state.rng() < (cfg.seekChance ?? 0.20)) {
+      const target = findNearestAliveEnemy(state, p, cfg.seekRange);
+      if (target) {
+        const ang = Math.atan2(target.y - p.y, target.x - p.x);
+        p.vx += Math.cos(ang) * cfg.seekForce * 0.55;
+        p.vy += Math.sin(ang) * cfg.seekForce * 0.55;
       }
     }
   }
+
+  p.vx += Math.cos(p.dir) * GAME.steerForce;
+  p.vy += Math.sin(p.dir) * GAME.steerForce;
+}
+function clampSpeed(p) {
+  const curSp = Math.hypot(p.vx, p.vy) || 1;
+  const maxSp = GAME.maxSpeed * (p.speedMult || 1);
+  const minSp = GAME.minSpeed * (p.speedMult || 1);
+  const clamped = Math.max(minSp, Math.min(maxSp, curSp));
+  p.vx = (p.vx / curSp) * clamped;
+  p.vy = (p.vy / curSp) * clamped;
 }
 
-function dealDamage(victim, attacker, impact) {
-  const dmg = CFG.baseContactDamage * CFG.impactDamageScale * impact * (attacker.dmgMult || 1) / (victim.defMult || 1);
-  const dealt = Math.max(1, Math.round(dmg));
-  victim.hp -= dealt;
-  victim.dmgTaken += dealt;
-  attacker.dmgDealt += dealt;
-  victim.hitFlash = 8;
-  victim.hitCd = CFG.damageCooldownTicks;
-  if (victim.hp <= 0) {
-    victim.hp = 0;
-    victim.alive = false;
-    attacker.kills++;
+// ---------- match tick ----------
+function tickMatch(state, events) {
+  if (state.tick >= GAME.zoneWarmupTicks && (state.tick % GAME.zoneShrinkEveryTicks === 0)) {
+    state.zone.r = Math.max(GAME.zoneEndRadius, state.zone.r - GAME.zoneShrinkStep);
+    scheduleZoneMove(state.zone, state.rng, state.tick);
   }
-}
+  updateZone(state.zone, state.tick);
 
-function stepTick(state) {
-  const { rng, zone, players } = state;
+  for (let sub = 0; sub < GAME.subSteps; sub++) {
+    for (const p of state.players) {
+      if (!p.alive) continue;
+      if (p.hitCd) p.hitCd--;
+      if (p.hitFlash) p.hitFlash--;
 
-  stepZone(zone, state.tick, rng);
+      aiSteer(state, p);
+      p.vx *= GAME.friction;
+      p.vy *= GAME.friction;
 
-  // AI + integrate
-  for (const p of players) {
-    if (!p.alive) continue;
-    if (p.hitCd > 0) p.hitCd--;
-    if (p.hitFlash > 0) p.hitFlash--;
+      clampSpeed(p);
+      p.x += p.vx;
+      p.y += p.vy;
 
-    const a = stepAI(p, players, zone, rng);
-    p.vx += a.ax;
-    p.vy += a.ay;
-
-    capSpeed(p);
-    p.vx *= CFG.friction;
-    p.vy *= CFG.friction;
-    p.x += p.vx;
-    p.y += p.vy;
-
-    pushBackIntoZone(p, zone);
-  }
-
-  resolveCollisions(players);
-
-  // zone damage (if outside after push/collisions)
-  for (const p of players) {
-    if (!p.alive) continue;
-    const d = hypot(p.x - zone.cx, p.y - zone.cy);
-    if (d > zone.r + 1) {
-      p.hp -= 1;
-      p.dmgTaken += 1;
-      if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+      bounceOffZone(state, p);
     }
+
+    for (let i = 0; i < state.players.length; i++) {
+      const a = state.players[i];
+      if (!a.alive) continue;
+      for (let j = i + 1; j < state.players.length; j++) {
+        const b = state.players[j];
+        if (!b.alive) continue;
+        collidePlayers(a, b, events, state.tick);
+      }
+    }
+  }
+
+  let alive = 0;
+  let last = null;
+  for (const p of state.players) if (p.alive) { alive++; last = p; }
+  if (alive <= 1) {
+    state.finished = true;
+    state.winner = last ? last.name : "—";
   }
 
   state.tick++;
 }
 
-function frameFromState(state) {
+// ---------- replay capture ----------
+function beginReplayCapture(state) {
   return {
+    version: 2,
+    startedAt: new Date().toISOString(),
+    dailyKey: state.dailyKey,
+    seed: state.seed,
+    frames: [],
+    events: [],
+    summary: null
+  };
+}
+function captureReplayFrame(cap, state) {
+  if (state.tick % GAME.replaySampleEveryTicks !== 0) return;
+  if (cap.frames.length >= GAME.replayMaxFrames) return;
+
+  cap.frames.push({
     tick: state.tick,
     zone: { cx: state.zone.cx, cy: state.zone.cy, r: state.zone.r },
     players: state.players.map(p => ({
-      id: p.id,
-      name: p.name,
-      x: p.x,
-      y: p.y,
-      vx: p.vx,
-      vy: p.vy,
-      hp: p.hp,
-      hpMax: p.hpMax,
-      alive: p.alive,
-      kills: p.kills,
-      dmgDealt: p.dmgDealt,
-      dmgTaken: p.dmgTaken,
+      id: p.id, name: p.name,
+      alive: p.alive, hp: p.hp,
+      x: p.x, y: p.y, vx: p.vx, vy: p.vy, dir: p.dir,
       hitFlash: p.hitFlash,
+      kills: p.kills, dmgDealt: p.dmgDealt, dmgTaken: p.dmgTaken,
       personality: p.personality,
       rarity: p.rarity,
+      hpMax: p.hpMax,
       speedMult: p.speedMult,
       dmgMult: p.dmgMult,
-      defMult: p.defMult
+      defMult: p.defMult,
+      speedStat: p.speedStat,
+      dmgStat: p.dmgStat,
+      defStat: p.defStat,
+      hpStat: p.hpStat
     }))
+  });
+}
+function finalizeReplay(cap, state) {
+  cap.finishedAt = new Date().toISOString();
+  cap.summary = {
+    winner: state.winner,
+    dailyKey: state.dailyKey,
+    seed: state.seed,
+    durationTicks: state.tick
   };
 }
 
-function pickWinner(players) {
-  const alive = alivePlayers(players);
-  if (alive.length === 1) return alive[0];
-  // fallback: highest HP
-  let best = players[0];
-  for (const p of players) if (p.hp > best.hp) best = p;
-  return best;
-}
+// ---------- main ----------
+function run() {
+  const key = make12hKey(new Date(), GAME.timezone);
+  const seed = dailySeedFromKey(key);
+  const rng = mulberry32(seed);
 
-// -----------------------------
-// main
-// -----------------------------
-const outDir = path.join(process.cwd(), "replays");
-ensureDir(outDir);
+  const zone = newZone(rng);
+  const players = [];
+  for (let i = 1; i <= GAME.players; i++) players.push(createPlayer(i, rng, zone));
 
-const key = make12hKey(new Date(), CFG.timezone);
-const createdAt = new Date().toISOString();
-const seed = hash32(key);
-const rng = mulberry32(seed);
-
-const zone = newZone(rng);
-const players = spawnPlayers(rng, zone);
-
-const state = { tick: 0, rng, seed, zone, players };
-const frames = [];
-
-// capture initial
-frames.push(frameFromState(state));
-
-for (let t = 0; t < CFG.maxTicks; t++) {
-  stepTick(state);
-  if (state.tick % CFG.sampleEveryTicks === 0) {
-    frames.push(frameFromState(state));
+  for (const p of players) {
+    applyRarityToPlayer(p, p.rarity, rng);
+    clampSpeed(p);
   }
-  if (alivePlayers(players).length <= 1) break;
+
+  const state = { mode: "LIVE", dailyKey: key, seed, rng, tick: 0, zone, players, finished: false, winner: null };
+
+  const cap = beginReplayCapture(state);
+
+  const MAX_TICKS = 20000;
+  while (!state.finished && state.tick < MAX_TICKS) {
+    const events = [];
+    tickMatch(state, events);
+    for (const e of events) cap.events.push(e);
+    captureReplayFrame(cap, state);
+  }
+
+  finalizeReplay(cap, state);
+
+  const outDir = path.join(process.cwd(), "replays");
+  fs.mkdirSync(outDir, { recursive: true });
+
+  fs.writeFileSync(path.join(outDir, `${key}.json`), JSON.stringify(cap));
+
+  const indexPath = path.join(outDir, "index.json");
+  let index = [];
+  if (fs.existsSync(indexPath)) {
+    try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch { index = []; }
+  }
+  index = [{ id: key, createdAt: cap.finishedAt, winner: cap.summary.winner }, ...index.filter(x => x.id !== key)].slice(0, 60);
+  fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+
+  console.log("✅ Generated REAL replay:", key, "winner:", cap.summary.winner, "frames:", cap.frames.length, "events:", cap.events.length);
 }
 
-const winner = pickWinner(players);
-
-const replay = {
-  version: 1,
-  id: key,
-  createdAt,
-  seed,
-  summary: {
-    winner: winner ? winner.name : "—",
-    winnerId: winner ? winner.id : null,
-    ticks: state.tick,
-    frames: frames.length
-  },
-  frames
-};
-
-fs.writeFileSync(path.join(outDir, `${key}.json`), JSON.stringify(replay));
-
-// update index
-const indexPath = path.join(outDir, "index.json");
-let index = [];
-try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch { index = []; }
-if (!Array.isArray(index)) index = [];
-
-index = [{ id: key, createdAt, winner: replay.summary.winner }, ...index]
-  .filter((v, i, a) => a.findIndex(x => (x.id || x.key) === (v.id || v.key)) === i)
-  .slice(0, 200);
-
-fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
-console.log(`Generated REAL replay ${key} with ${frames.length} frames. Winner: ${replay.summary.winner}`);
+run();
