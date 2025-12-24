@@ -85,12 +85,12 @@ window.GAME_CONFIG = {
   // 🔥 FAST ZONE SETTINGS
   // ============================
   zone: {
-    warmupTicks: 25,        // starts much sooner
-    shrinkEveryTicks: 22,   // shrinks more often
-    shrinkStep: 14,         // bigger shrink each time
-    endRadius: 70,          // tighter final fights
+    warmupTicks: 500,        // starts much sooner
+    shrinkEveryTicks: 300,   // shrinks more often
+    shrinkStep: 12,         // bigger shrink each time
+    endRadius: 40,          // tighter final fights
     shiftMax: 180,          // more zone movement
-    moveDurationTicks: 45   // faster zone movement
+    moveDurationTicks: 18ß   // faster zone movement
   },
 
   // ============================
