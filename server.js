@@ -1,9 +1,10 @@
-// server.cjs  (CommonJS - works without package.json)
+// server.js — Render compatible static server
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = 3000;
+// ✅ Render provides PORT automatically
+const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 
 const MIME = {
@@ -22,13 +23,16 @@ http.createServer((req, res) => {
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      res.writeHead(404);
+      res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[ext] || "text/plain" });
+
+    res.writeHead(200, {
+      "Content-Type": MIME[ext] || "text/plain"
+    });
     res.end(data);
   });
 }).listen(PORT, () => {
-  console.log(`✅ Game running: http://localhost:${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
