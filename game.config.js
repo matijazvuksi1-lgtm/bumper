@@ -5,10 +5,10 @@ window.GAME_CONFIG = {
   // ============================
   meta: {
     timezone: "Europe/Zagreb",
-    dailyResetHour: 12,
+    dailyResetHour: 6,
     dailyResetMinute: 0,
     gameName: "Bumper Royale",
-    version: "1.0.1-fast-zone"
+    version: "1.2.0-replay-server"
   },
 
   // ============================
