@@ -275,8 +275,17 @@ function bumpMatchStats(state) {
 }
 
 
-  function saveJSON(k, obj) { try { localStorage.setItem(k, JSON.stringify(obj)); } catch { } }
-  function loadJSON(k, fallback) { try { const s = localStorage.getItem(k); return s ? safeJsonParse(s, fallback) : fallback; } catch { return fallback; } }
+  // No browser storage: keep tiny state in-memory only (refresh clears it).
+  const __MEM_STORE__ = new Map();
+  function saveJSON(k, obj) { try { __MEM_STORE__.set(k, JSON.stringify(obj)); } catch { } }
+  function loadJSON(k, fallback) {
+    try {
+      const s = __MEM_STORE__.get(k);
+      return s ? safeJsonParse(s, fallback) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
 
   function addToHistoryKeyList(dailyKey) {
     const arr = loadJSON(HISTORY_KEY, []);
